@@ -1,0 +1,392 @@
+flowchart TD
+    A["Battle start"] --> B["BattleAI_HandleItemUseBeforeAISetup"]
+    B --> C["Clear BattleHistory"]
+    C --> D{"Normal trainer battle<br/>and items allowed?"}
+    D -- Yes --> E["Load trainer items into BattleHistory"]
+    D -- No --> F["Skip item preload"]
+    E --> G["BattleAI_SetupAIData 0xF"]
+    F --> G
+
+    G --> H["Clear AI thinking struct"]
+    H --> I["Initialize move scores to 100"]
+    I --> J["Pick initial target<br/>single = foe<br/>double = random opposing slot"]
+    J --> K["Zero score for unusable moves"]
+    K --> L["GetAIFlags"]
+
+    L --> M{"Battle type / mode"}
+    M -- "Hardcore trainer" --> N["aiFlags = 7"]
+    M -- "Other cases" --> O["Different flags"]
+    N --> P["Meaning:<br/>bit 0 Negatives<br/>bit 1 SemiSmart<br/>bit 2 Positives"]
+
+    P --> Q["AI turn starts"]
+    Q --> R["AI_TrySwitchOrUseItem"]
+    R --> S["CalculateAIPredictions once per turn"]
+
+    subgraph PRED["CalculateAIPredictions"]
+        S --> S1["UpdateStrongestMoves"]
+        S1 --> S1A["For each battler:<br/>record mega potential"]
+        S1A --> S1B["In singles, temporarily mega evolve attacker"]
+        S1B --> S1C["For each enemy target:<br/>store strongestMove<br/>canKnockOut<br/>can2HKO"]
+
+        S --> S2["UpdateBestDoublesKillingMoves"]
+        S2 --> S2A["In doubles, for each attacker-target pair:<br/>store best spread / KO move score"]
+
+        S --> S3["PredictMovesForBanks"]
+        S3 --> S3A["For each living battler and each living target"]
+        S3A --> S3B{"Recharge / truant / helpless sleep?"}
+        S3B -- Yes --> S3C["Store MOVE_NONE prediction"]
+        S3B -- No --> S3D{"Locked into move?"}
+        S3D -- Yes --> S3E["Store locked move prediction"]
+        S3D -- No --> S3F["Temporarily force smart flags = 7"]
+        S3F --> S3G["Score each legal move with Negatives then Positives"]
+        S3G --> S3H{"Best viability < 100?"}
+        S3H -- Yes --> S3I["Predict SWITCH"]
+        S3H -- No --> S3J["Predict one of best moves"]
+
+        S --> S4["RunCalcShouldAIDynamax"]
+        S4 --> S4A["Calc AI dynamax side choice"]
+        S4A --> S4B["Calc should battler dynamax vs each target"]
+
+        S --> S5["Mark predictions cached for this turn"]
+    end
+
+    S --> T{"Trainer battle?"}
+    T -- No --> Z1["Use move"]
+    T -- Yes --> U["Temporarily mega evolve active battler for simulation"]
+    U --> V{"ShouldSwitch?"}
+
+    subgraph SW["ShouldSwitch expanded"]
+        V --> V0{"Trapped?"}
+        V0 -- Yes --> VX["Do not switch"]
+        V0 -- No --> V1{"Any legal bench mon available?"}
+        V1 -- No --> VX
+        V1 -- Yes --> V2{"ShouldSwitchIfOnlyBadMovesLeft?"}
+
+        subgraph H1["ShouldSwitchIfOnlyBadMovesLeft"]
+            V2 --> H1A{"Switch cooldown active?"}
+            H1A -- Yes --> H1Z["No"]
+            H1A -- No --> H1B{"Double battle?"}
+            H1B -- Yes --> H1C{"Both foes dead or only bad moves left vs both?"}
+            H1C -- Yes --> H1SW["Queue generic switch"]
+            H1C -- No --> H1Z
+            H1B -- No --> H1D{"Only bad moves left vs foe?"}
+            H1D -- Yes --> H1E["bestMon = GetMostSuitableMonToSwitchInto"]
+            H1E --> H1F{"Predicted foe move won't hurt bestMon too much?"}
+            H1F -- Yes --> H1SW
+            H1F -- No --> H1G{"Atk stage <= -2 and at least two physical moves?"}
+            H1D -- No --> H1G
+            H1G -- Yes --> H1H["bestMon = GetMostSuitableMonToSwitchInto"]
+            H1H --> H1I{"bestMon safely absorbs predicted move?"}
+            H1I -- Yes --> H1J["Estimate strongest usable damage"]
+            H1J --> H1K{"Does not KO foe?"}
+            H1K -- Yes --> H1SW
+            H1K -- No --> H1L{"SpAtk stage <= -2 and at least two special moves?"}
+            H1I -- No --> H1L
+            H1G -- No --> H1L
+            H1L -- Yes --> H1M["bestMon = GetMostSuitableMonToSwitchInto"]
+            H1M --> H1N{"bestMon safely absorbs predicted move?"}
+            H1N -- Yes --> H1O["Estimate strongest usable damage"]
+            H1O --> H1P{"Does not KO foe?"}
+            H1P -- Yes --> H1SW
+            H1P -- No --> H1Z
+            H1L -- No --> H1Z
+        end
+
+        H1SW --> VSW["Switch"]
+        H1Z --> V3{"ShouldSwitchIfPerishSong?"}
+        V3 -- Yes --> VSW
+        V3 -- No --> V4{"ShouldSwitchIfWonderGuard?"}
+
+        subgraph H2["ShouldSwitchIfWonderGuard"]
+            V4 --> H2A{"Single battle?"}
+            H2A -- No --> H2Z["No"]
+            H2A -- Yes --> H2B{"Foe has Wonder Guard?"}
+            H2B -- No --> H2Z
+            H2B -- Yes --> H2C{"Foe already dying to secondary damage?"}
+            H2C -- Yes --> H2Z
+            H2C -- No --> H2D["Check each legal current move"]
+            H2D --> H2E{"Current mon can bypass Wonder Guard?"}
+            H2E -- Yes --> H2Z
+            H2E -- No --> H2F["Search party for alive legal bench mon"]
+            H2F --> H2G{"Bench mon has super-effective damaging move vs foe?"}
+            H2G -- Yes --> H2SW["Switch to that mon"]
+            H2G -- No --> H2Z
+        end
+
+        H2SW --> VSW
+        H2Z --> V5{"FindMonThatAbsorbsOpponentsMove?"}
+
+        subgraph H3["FindMonThatAbsorbsOpponentsMove"]
+            V5 --> H3A["Read predicted foe move(s)"]
+            H3A --> H3B{"Single battle and active mon can just win now?"}
+            H3B -- Yes --> H3Z["No"]
+            H3B -- No --> H3C{"Double battle and active mon has high-value KO play?"}
+            H3C -- Yes --> H3Z
+            H3C -- No --> H3D{"No meaningful damaging prediction from foes?"}
+            H3D -- Yes --> H3Z
+            H3D -- No --> H3E["Get predicted move type"]
+            H3E --> H3F{"Type is Fire / Electric / Water / Grass / Rock?"}
+            H3F -- No --> H3Z
+            H3F -- Yes --> H3G["Map type to absorb ability set<br/>Flash Fire<br/>Volt Absorb / Lightning Rod / Motor Drive<br/>Water Absorb / Dry Skin / Storm Drain<br/>Sap Sipper<br/>Mountaineer"]
+            H3G --> H3H{"Active battler already predicted to have absorb ability?"}
+            H3H -- Yes --> H3Z
+            H3H -- No --> H3I["Scan party for legal bench mon"]
+            H3I --> H3J{"Bench ability matches absorb set?"}
+            H3J -- Yes --> H3SW["Switch to absorber"]
+            H3J -- No --> H3Z
+        end
+
+        H3SW --> VSW
+        H3Z --> V6{"ShouldSwitchIfNaturalCureOrRegenerator?"}
+
+        subgraph H4["ShouldSwitchIfNaturalCureOrRegenerator"]
+            V6 --> H4A{"Ability = Natural Cure?"}
+            H4A -- Yes --> H4B{"Entry hazards too punishing?"}
+            H4B -- Yes --> H4Z["No"]
+            H4B -- No --> H4C{"Sleep or freeze?"}
+            H4C -- Yes --> H4SW["Queue generic switch"]
+            H4C -- No --> H4D{"Any regular status and HP >= 50 and not Dynamaxed?"}
+            H4D -- Yes --> H4SW
+            H4D -- No --> H4Z
+
+            H4A -- No --> H4E{"Ability = Regenerator?"}
+            H4E -- No --> H4Z
+            H4E -- Yes --> H4F{"HP > 50 or Dynamaxed?"}
+            H4F -- Yes --> H4Z
+            H4F -- No --> H4G{"HP < 33?"}
+            H4G -- Yes --> H4Z
+            H4G -- No --> H4H{"Entry hazards too punishing?"}
+            H4H -- Yes --> H4Z
+            H4H -- No --> H4I["Read foe move predictions"]
+            H4I --> H4J{"A foe can KO active mon?"}
+            H4J -- No --> H4Z
+            H4J -- Yes --> H4K{"Active mon can move first and KO one threatening foe?"}
+            H4K -- Yes --> H4Z
+            H4K -- No --> H4SW
+        end
+
+        H4SW --> VSW
+        H4Z --> V7{"PassOnWish?"}
+
+        subgraph H5["PassOnWish"]
+            V7 --> H5A{"Wish pending on active slot?"}
+            H5A -- No --> H5Z["No"]
+            H5A -- Yes --> H5B{"Active HP < 50 and can survive / protect through hit?"}
+            H5B -- Yes --> H5Z
+            H5B -- No --> H5C["Scan legal bench mons"]
+            H5C --> H5D{"Any bench mon below 50 HP?"}
+            H5D -- Yes --> H5SW["Switch specifically into that low-HP mon"]
+            H5D -- No --> H5Z
+        end
+
+        H5SW --> VSW
+        H5Z --> V8{"SemiInvulnerableTroll?"}
+
+        subgraph H6["SemiInvulnerableTroll"]
+            V8 --> H6A{"Any foe currently semi-invulnerable?"}
+            H6A -- No --> H6Z["No"]
+            H6A -- Yes --> H6B{"Doubles and AI cannot infer target safely?"}
+            H6B -- Yes --> H6Z
+            H6B -- No --> H6C{"Active mon is Dynamaxed with >1 turn left?"}
+            H6C -- Yes --> H6Z
+            H6C -- No --> H6D["RunAllSemiInvulnerableLockedMoveCalcs<br/>checkLockedMoves = false"]
+            H6D --> H6E["Try in order:<br/>immune to foe1 locked move effect<br/>immune to foe2<br/>resist foe1<br/>resist foe2"]
+            H6E --> H6F["For each candidate foe, TheCalcForSemiInvulnerableTroll"]
+            H6F --> H6G{"Foe targeting active slot with semi-invulnerable or locked move?"}
+            H6G -- No --> H6Z
+            H6G -- Yes --> H6H{"Current active already immune or resists enough?"}
+            H6H -- Yes --> H6Z
+            H6H -- No --> H6I["Scan legal bench mons"]
+            H6I --> H6J{"A bench mon gets requested immunity / resistance flags?"}
+            H6J -- Yes --> H6SW["Queue switch to that mon"]
+            H6J -- No --> H6Z
+        end
+
+        H6SW --> VSW
+        H6Z --> V9{"CanStopLockedMove?"}
+
+        subgraph H7["CanStopLockedMove"]
+            V9 --> H7A{"Any foe locked into non-status move?"}
+            H7A -- No --> H7Z["No"]
+            H7A -- Yes --> H7B{"Doubles and AI cannot infer target safely?"}
+            H7B -- Yes --> H7Z
+            H7B -- No --> H7C{"Active mon Dynamaxed with >1 turn left?"}
+            H7C -- Yes --> H7Z
+            H7C -- No --> H7D["Run same semi-invulnerable / locked-move calc<br/>but checkLockedMoves = true"]
+            H7D --> H7E{"Bench immune or resistant answer exists?"}
+            H7E -- Yes --> H7SW["Queue switch"]
+            H7E -- No --> H7Z
+        end
+
+        H7SW --> VSW
+        H7Z --> V10{"IsYawned?"}
+
+        subgraph H8["IsYawned"]
+            V10 --> H8A{"Not Natural Cure and currently Yawned and can still be put to sleep and HP > 25?"}
+            H8A -- No --> H8Z["No"]
+            H8A -- Yes --> H8B{"Only one foe left and active can KO it?"}
+            H8B -- Yes --> H8Z
+            H8B -- No --> H8C{"An enemy is trapped by active mon's wrap damage?"}
+            H8C -- Yes --> H8Z
+            H8C -- No --> H8D{"Can fight through sleep?<br/>berry / status cure / Early Bird / Shed Skin / Snore / Sleep Talk / can set terrain"}
+            H8D -- Yes --> H8Z
+            H8D -- No --> H8E{"Single battle and can still get a decisive KO before sleep?"}
+            H8E -- Yes --> H8Z
+            H8E -- No --> H8F{"Double battle and best doubles move is major-value KO play?"}
+            H8F -- Yes --> H8Z
+            H8F -- No --> H8SW["Queue generic switch"]
+        end
+
+        H8SW --> VSW
+        H8Z --> V11{"IsTakingAnnoyingSecondaryDamage?"}
+
+        subgraph H9["IsTakingAnnoyingSecondaryDamage"]
+            V11 --> H9A{"Predicted foe ability is not Magic Guard<br/>and active cannot kill a foe<br/>and not Dynamaxed<br/>and AI is smart?"}
+            H9A -- No --> H9Z["No"]
+            H9A -- Yes --> H9B{"Leech Seed random 25 percent<br/>or Nightmare sleep<br/>or Ghost Curse<br/>or Toxic has dragged on a long time?"}
+            H9B -- No --> H9Z
+            H9B -- Yes --> H9C{"Entry hazards too punishing?"}
+            H9C -- Yes --> H9Z
+            H9C -- No --> H9SW["Queue generic switch"]
+        end
+
+        H9SW --> VSW
+        H9Z --> V12{"ShouldSwitchToAvoidDeath?"}
+
+        subgraph H10["ShouldSwitchToAvoidDeath"]
+            V12 --> H10A{"Switch cooldown active?"}
+            H10A -- Yes --> H10Z["No"]
+            H10A -- No --> H10B{"Single battle and AI is smart?"}
+            H10B -- No --> H10Z
+            H10B -- Yes --> H10C["Read predicted active move and foe move"]
+            H10C --> H10D{"Foe predicted to attack and active not going first?"}
+            H10D -- No --> H10Z
+            H10D -- Yes --> H10E{"Substitute does not save active?"}
+            H10E -- No --> H10Z
+            H10E -- Yes --> H10F{"Predicted foe move KOs active?<br/>hazards acceptable?<br/>active HP > 20 percent?"}
+            H10F -- No --> H10Z
+            H10F -- Yes --> H10G["bestMon = GetMostSuitableMonToSwitchInto"]
+            H10G --> H10H{"bestMon is immune to predicted move and has at least some followup score?"}
+            H10H -- Yes --> H10SW["Queue generic switch"]
+            H10H -- No --> H10I{"bestMon takes manageable damage and has walling score?"}
+            H10I -- Yes --> H10SW
+            H10I -- No --> H10Z
+        end
+
+        H10SW --> VSW
+        H10Z --> VX
+    end
+
+    VSW --> W["Choose switch target"]
+    VX --> X["No switch"]
+    W --> W1{"switchoutIndex already set?"}
+    W1 -- Yes --> W4["Use stored switch target"]
+    W1 -- No --> W2["monToSwitchId = GetMostSuitableMonToSwitchInto"]
+    W2 --> W3{"No scored option found?"}
+    W3 -- Yes --> W5["Pick first legal non-fainted bench mon"]
+    W3 -- No --> W4
+    W5 --> W6["Store switch target"]
+    W4 --> W6
+    W6 --> Y["monToSwitchIntoId = chosen target"]
+
+    subgraph BEST["GetMostSuitableMonToSwitchInto / CalcMostSuitableMonToSwitchInto"]
+        W2 --> B1["If cached best choice exists and is alive, use it"]
+        B1 --> B2{"Best clashes with another reserved switch slot?"}
+        B2 -- Yes --> B3["Use second-best cached choice"]
+        B2 -- No --> B4["Use best cached choice"]
+        B1 --> B5{"Need recalc?"}
+        B5 -- Yes --> B6["CalcMostSuitableMonToSwitchInto"]
+        B6 --> B7["Collect all legal bench mons"]
+        B7 --> B8{"No candidates?"}
+        B8 -- Yes --> B9["Reset cache and return PARTY_SIZE"]
+        B8 -- No --> B10["For each candidate mon"]
+        B10 --> B11{"Would faint on hazards or currently asleep?"}
+        B11 -- Yes --> B10
+        B11 -- No --> B12["Score offense vs each foe"]
+        B12 --> B13{"Can KO foe?"}
+        B13 -- Yes --> B14["+4 KO_FOE"]
+        B14 --> B15{"Has Moxie / Soul Heart / Beast Boost style snowball<br/>or priority / trap / Fell Stinger / Pursuit revenge KO?"}
+        B15 -- Yes --> B16["+2 REVENGE_KILL"]
+        B15 -- No --> B17["continue"]
+        B13 -- No --> B18{"Has any super-effective legal move?"}
+        B18 -- Yes --> B19["+1 HAS_SUPER_EFFECTIVE_MOVE"]
+        B18 -- No --> B20["continue"]
+
+        B12 --> B21["Check defensive profile vs each foe move"]
+        B21 --> B22{"Weak to any foe move?"}
+        B22 -- Yes --> B23["-1 WEAK_TO_MOVE"]
+        B22 -- No --> B24{"Foe lacks any normal-or-better move into this mon?"}
+        B24 -- Yes --> B25["+4 RESIST_ALL_MOVES"]
+        B24 -- No --> B26{"Can still wall foe's offensive stats?"}
+        B26 -- Yes --> B27["+2 WALLS_FOE"]
+        B26 -- No --> B28["continue"]
+
+        B10 --> B29{"Can remove hazards or absorb Toxic Spikes?"}
+        B29 -- Yes --> B30["Mark special hazard utility"]
+        B29 -- No --> B31["continue"]
+        B10 --> B32{"Perfect score and hazard utility?"}
+        B32 -- Yes --> B33["Fast-track as best choice"]
+        B32 -- No --> B34["Keep highest and second-highest score"]
+        B34 --> B35{"Best score < 8 and hazard remover / TSpikes absorber exists?"}
+        B35 -- Yes --> B36["Prefer hazard utility mon"]
+        B35 -- No --> B37["Store best and second-best in cache"]
+    end
+
+    Y --> X2["Revert temporary mega state"]
+    X --> X2
+    X2 --> X3{"Did AI queue switch?"}
+    X3 -- Yes --> END1["Action = SWITCH"]
+    X3 -- No --> Z1
+
+    Z1 --> Z2["BattleAI_ChooseMoveOrAction"]
+    Z2 --> Z3{"Single or double battle?"}
+
+    subgraph MOVE["Move choice"]
+        Z3 -- Single --> M1["ChooseMoveOrAction_Singles"]
+        M1 --> M2["Populate defender data"]
+        M2 --> M3["For each enabled flag bit in aiFlags"]
+        M3 --> M4["Set aiState = SettingUp"]
+        M4 --> M5["BattleAI_DoAIProcessing"]
+        M5 --> M6["For each move slot"]
+        M6 --> M7{"PP > 0 and score > 0?"}
+        M7 -- No --> M8["Force score = 0"]
+        M7 -- Yes --> M9{"aiLogicId points to script?"}
+        M9 -- No --> M10["Leave score as is"]
+        M9 -- Yes --> M11["Run script on move"]
+        M11 --> M12{"aiLogicId 0?"}
+        M12 -- Yes --> M13["AIScript_Negatives"]
+        M12 -- No --> M14{"aiLogicId 1?"}
+        M14 -- Yes --> M15["AIScript_SemiSmart"]
+        M14 -- No --> M16{"aiLogicId 2?"}
+        M16 -- Yes --> M17["AIScript_Positives"]
+        M13 --> M18["Update score"]
+        M15 --> M18
+        M17 --> M18
+        M18 --> M19{"AI_ACTION_DO_NOT_ATTACK set?"}
+        M19 -- Yes --> M20["Stop processing more move slots"]
+        M19 -- No --> M21["Continue next move"]
+        M3 --> M22{"AI_ACTION_FLEE?"}
+        M22 -- Yes --> M23["Return FLEE"]
+        M22 -- No --> M24{"AI_ACTION_WATCH?"}
+        M24 -- Yes --> M25["Return WATCH"]
+        M24 -- No --> M26["Collect highest-scoring legal move(s)"]
+        M26 --> M27["Random tie-break among best"]
+        M27 --> M28["Return chosen move index"]
+
+        Z3 -- Double --> D1["ChooseMoveOrAction_Doubles"]
+        D1 --> D2["Evaluate each possible target battler separately"]
+        D2 --> D3["For each target, rerun scoring pipeline"]
+        D3 --> D4["Pick best move per target"]
+        D4 --> D5["Record best score for that target"]
+        D5 --> D6["Disallow weak ally-target choices below 101"]
+        D6 --> D7["Compare targets by best score"]
+        D7 --> D8{"Tie on score with damaging moves?"}
+        D8 -- Yes --> D9["Prefer target taking higher actual damage"]
+        D8 -- No --> D10["Keep best-scoring target"]
+        D9 --> D11["Random tie-break among equal best targets"]
+        D10 --> D11
+        D11 --> D12["Return move index for chosen target"]
+    end
+
+    M28 --> END2["Action = USE MOVE"]
+    D12 --> END2
